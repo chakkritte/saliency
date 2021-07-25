@@ -18,6 +18,7 @@ class MSINET:
     def __init__(self):
         self._output = None
         self._mapping = {}
+        self.attention = "none"
 
         if config.PARAMS["device"] == "gpu":
             self._data_format = "channels_first"
@@ -27,6 +28,99 @@ class MSINET:
             self._data_format = "channels_last"
             self._channel_axis = 3
             self._dims_axis = (1, 2)
+
+    def cbam_block(self, input_feature, name, ratio=8, input_filters=128):
+        """Contains the implementation of Convolutional Block Attention Module(CBAM) block.
+        As described in https://arxiv.org/abs/1807.06521.
+        """
+        with tf.variable_scope(name):
+            attention_feature = self.channel_attention(input_feature, 'ch_at', ratio, input_filters=input_filters)
+            attention_feature = self.spatial_attention(attention_feature, 'sp_at', input_filters=input_filters)
+            return attention_feature
+
+    def channel_attention(self, input_feature, name, ratio=8, input_filters=128):
+        kernel_initializer = tf.contrib.layers.variance_scaling_initializer()
+        bias_initializer = tf.constant_initializer(value=0.0)
+        
+        with tf.variable_scope(name):
+            
+            channel = input_filters
+            avg_pool = tf.reduce_mean(input_feature, axis=self._dims_axis, keepdims=True)
+            
+            avg_pool = tf.layers.conv2d(avg_pool, channel // ratio, (1, 1), use_bias=True,
+                                            name=name + 'mlp_0', strides=(1, 1),
+                                            padding='valid', data_format=self._data_format, 
+                                            activation=tf.nn.relu,
+                                            kernel_initializer=kernel_initializer,
+                                            bias_initializer=bias_initializer,
+                                            reuse=None)
+
+            avg_pool = tf.layers.conv2d(avg_pool, channel, (1, 1), use_bias=True,
+                                            name=name + 'mlp_1', strides=(1, 1),
+                                            padding='valid', data_format=self._data_format,
+                                            kernel_initializer=kernel_initializer,
+                                            bias_initializer=bias_initializer,
+                                            reuse=None)
+
+            max_pool = tf.reduce_max(input_feature, axis=self._dims_axis, keepdims=True)    
+
+            max_pool = tf.layers.conv2d(max_pool, channel//ratio, (1, 1), use_bias=True,
+                                            name=name + 'mlp_0', strides=(1, 1),
+                                            padding='valid', data_format=self._data_format,
+                                            activation=tf.nn.relu,
+                                            reuse=True)
+
+            max_pool = tf.layers.conv2d(max_pool, channel, (1, 1), use_bias=True,
+                                            name=name + 'mlp_1', strides=(1, 1),
+                                            padding='valid', data_format=self._data_format,
+                                            reuse=True)
+
+            scale = tf.sigmoid(avg_pool + max_pool, 'sigmoid')
+            
+            return input_feature * scale
+
+    def spatial_attention(self, input_feature, name, input_filters=128):
+        kernel_size = 7
+        kernel_initializer = tf.contrib.layers.variance_scaling_initializer()
+        with tf.variable_scope(name):
+            avg_pool = tf.reduce_mean(input_feature, axis=[3], keepdims=True)
+            max_pool = tf.reduce_max(input_feature, axis=[3], keepdims=True)
+            concat = tf.concat([avg_pool,max_pool], 3)
+            
+            concat = tf.layers.conv2d(concat,
+                                    filters=1,
+                                    kernel_size=[kernel_size,kernel_size],
+                                    strides=[1,1],
+                                    padding="same",
+                                    activation=None,
+                                    kernel_initializer=kernel_initializer,
+                                    use_bias=False,
+                                    name='conv')
+            concat = tf.sigmoid(concat, 'sigmoid')
+            
+            return input_feature * concat
+
+
+    def se_block(self, residual, name, ratio=8, input_filters=128):
+        with tf.variable_scope(name):
+            # Global average pooling
+            kernel_initializer = tf.contrib.layers.variance_scaling_initializer()
+            bias_initializer = tf.constant_initializer(value=0.0)
+            squeeze = tf.reduce_mean(residual, axis=self._dims_axis, keepdims=True)  
+            excitation = tf.layers.conv2d(squeeze, input_filters // ratio, (1, 1), use_bias=True,
+                                            name=name + '_1x1_down', strides=(1, 1),
+                                            padding='valid', data_format=self._data_format, 
+                                            activation=tf.nn.relu,
+                                            kernel_initializer=kernel_initializer,
+                                            bias_initializer=bias_initializer)
+            excitation = tf.layers.conv2d(excitation, input_filters, (1, 1), use_bias=True,
+                                            name=name + '_1x1_up', strides=(1, 1),
+                                            padding='valid', data_format=self._data_format, 
+                                            activation=tf.nn.sigmoid,
+                                            kernel_initializer=kernel_initializer,
+                                            bias_initializer=bias_initializer)
+            scale = residual * excitation  
+            return scale
 
     def _encoder(self, images):
         """The encoder of the model consists of a pretrained VGG16 architecture
@@ -144,11 +238,11 @@ class MSINET:
         layer18 = tf.layers.max_pooling2d(layer17, 2, 1,
                                           padding="same",
                                           data_format=self._data_format)
+        
+        encoder_output = tf.concat([layer10, layer14, layer18],axis=self._channel_axis)
 
-        encoder_output = tf.concat([layer10, layer14, layer18],
-                                   axis=self._channel_axis)
-
-        self._output = encoder_output
+        #self._output = self.se_block(encoder_output, name="00_se", input_filters=1280)
+        self._output = self.cbam_block(input_feature=encoder_output, name="00_cbam", ratio=8, input_filters=1280)
 
     def _aspp(self, features):
         """The ASPP module samples information at multiple spatial scales in
@@ -311,12 +405,17 @@ class MSINET:
            network. Therefore, their names are matched to the ones of the
            pretrained VGG16 checkpoint for correct initialization.
         """
-
-        for var in tf.global_variables()[:26]:
-            key = var.name.split("/", 1)[1]
-            key = key.replace("kernel:0", "weights")
-            key = key.replace("bias:0", "biases")
-            self._mapping[key] = var
+        if self.attention == 'se':
+            index = 38 #70
+        else: 
+            index = 26
+        for var in tf.global_variables()[:index]:
+            if 'se' not in var.name.split("/", 1)[1]:
+                #print(var.name.split("/", 1)[1])
+                key = var.name.split("/", 1)[1]
+                key = key.replace("kernel:0", "weights")
+                key = key.replace("bias:0", "biases")
+                self._mapping[key] = var
 
     def forward(self, images):
         """Public method to forward RGB images through the whole network
@@ -335,6 +434,7 @@ class MSINET:
         self._aspp(self._output)
         self._decoder(self._output)
         self._normalize(self._output)
+    
 
         return self._output
 
@@ -402,7 +502,7 @@ class MSINET:
         if os.path.isfile(paths["latest"] + model_name + ext1) and \
            os.path.isfile(paths["latest"] + model_name + ext2):
             saver.restore(sess, paths["latest"] + model_name + ".ckpt")
-        elif dataset in ("mit1003", "cat2000", "dutomron",
+        elif dataset in ("mit1003", "dutomron", "cat2000",
                          "pascals", "osie", "fiwi"):
             if os.path.isfile(paths["best"] + salicon_name + ext1) and \
                os.path.isfile(paths["best"] + salicon_name + ext2):

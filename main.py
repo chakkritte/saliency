@@ -13,6 +13,9 @@ import utils
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 tf.logging.set_verbosity(tf.logging.ERROR)
 
+import matplotlib
+matplotlib.use('Agg')
+
 
 def define_paths(current_path, args):
     """A helper function to define all relevant path elements for the
@@ -78,12 +81,12 @@ def train_model(dataset, paths, device):
     input_images, ground_truths = next_element[:2]
 
     input_plhd = tf.placeholder_with_default(input_images,
-                                             (None, None, None, 3),
-                                             name="input")
+                                                    (None, None, None, 3),
+                                                    name="input")
+
     msi_net = model.MSINET()
-
     predicted_maps = msi_net.forward(input_plhd)
-
+    print(predicted_maps.get_shape())
     optimizer, loss = msi_net.train(ground_truths, predicted_maps,
                                     config.PARAMS["learning_rate"])
 
@@ -217,9 +220,10 @@ def main():
 
     phases_list = ["train", "test"]
 
-    datasets_list = ["salicon", "mit1003", "cat2000",
-                     "dutomron", "pascals", "osie", "fiwi"]
-
+    # datasets_list = ["salicon", "mit1003", "cat2000",
+    #                  "dutomron", "pascals", "osie", "fiwi"]
+    datasets_list = ["salicon", "mit1003", "cat2000"]
+    
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 

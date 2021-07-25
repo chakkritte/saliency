@@ -6,6 +6,9 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as plticker
 import numpy as np
 
+import matplotlib
+matplotlib.use('Agg')
+
 
 class History:
     """This class represents the training history of a model. It can load the
