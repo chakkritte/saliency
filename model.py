@@ -241,8 +241,12 @@ class MSINET:
         
         encoder_output = tf.concat([layer10, layer14, layer18],axis=self._channel_axis)
 
-        #self._output = self.se_block(encoder_output, name="00_se", input_filters=1280)
-        self._output = self.cbam_block(input_feature=encoder_output, name="00_cbam", ratio=8, input_filters=1280)
+        if config.PARAMS["attention"] == None :
+            self._output = encoder_output
+        elif config.PARAMS["attention"] == 'se' :
+            self._output = self.se_block(encoder_output, name="00_se", input_filters=1280)
+        elif config.PARAMS["attention"] == 'cbam' :
+            self._output = self.cbam_block(input_feature=encoder_output, name="00_cbam", ratio=8, input_filters=1280)
 
     def _aspp(self, features):
         """The ASPP module samples information at multiple spatial scales in

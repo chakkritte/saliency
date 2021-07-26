@@ -10,7 +10,8 @@ PARAMS = {
     "n_epochs": 10,
     "batch_size": 1,
     "learning_rate": 1e-5,
-    "device": "gpu"
+    "device": "gpu",
+    "attention": None #[None, "se", "cbam"]
 }
 
 """The predefined input image sizes for each of the 3 datasets.
@@ -29,3 +30,4 @@ DIMS = {
     "image_size_osie": (240, 320),
     "image_size_fiwi": (216, 384)
 }
+
